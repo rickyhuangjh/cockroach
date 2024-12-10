@@ -1,0 +1,99 @@
+BEGIN;
+
+CREATE TABLE a
+(
+    k INT PRIMARY KEY,
+    i INT NOT NULL,
+    f FLOAT,
+    s STRING NOT NULL,
+    j JSON,
+    UNIQUE INDEX si_idx (s DESC, i) STORING (j),
+    UNIQUE INDEX fi_idx (f, i)
+);
+
+CREATE TABLE booleans (
+		k INT PRIMARY KEY,
+    a BOOL NOT NULL,
+		b BOOL,
+		c BOOL
+);
+
+CREATE TABLE xy
+(
+    x INT PRIMARY KEY,
+    y INT
+);
+
+INSERT INTO a (k, i, f, s) VALUES (1, 2, 3, 'cockroach');
+INSERT INTO a (k, i, f, s) VALUES (2, 4, 6, 'cockroach');
+
+
+explain (opt) SELECT k, i FROM a GROUP BY k;
+
+-- Eliminate because ConstAgg(k), XOR_AGG(i), and Sum(f) are pass-through
+explain (opt) SELECT k, XOR_AGG(i) AS i, SUM(f) AS f FROM a GROUP BY k;
+----
+explain (opt) SELECT k, i as hello, f FROM a;
+
+
+SELECT k, MAX(i), MIN(f), SUM_INT(i) FROM a GROUP BY k;
+----
+SELECT k, i, f, i FROM a;
+
+
+SELECT k, i, CONCAT_AGG(s), STRING_AGG(s, ', ') FROM a GROUP BY (s, i);
+----
+SELECT k, i, s, s FROM a;
+
+
+SELECT BOOL_AND(a), BOOL_OR(b) FROM booleans GROUP BY k;
+----
+SELECT a, b FROM booleans;
+
+
+SELECT k, BIT_AND(i) AS hello, BIT_OR(i) AS world FROM a GROUP BY k; 
+----
+SELECT k, i AS hello, i AS world FROM a GROUP BY k;
+
+
+SELECT k, XOR_AGG(i) + SUM_INT(i) + k AS result, s FROM a GROUP BY k;
+----
+SELECT k, i + i + k AS result, s FROM a;
+
+
+-- Eliminate when GroupBy is created from join decorrelation
+SELECT k FROM a WHERE i = (SELECT MAX(y) FROM xy WHERE k = x);
+----
+SELECT k FROM a JOIN (
+	SELECT x, y as max_val
+	FROM xy
+) ON k = x
+WHERE i = max_val;
+
+
+-- Do not eliminate because i has type int but AVG(i) has type decimal
+SELECT k, AVG(i) FROM a GROUP BY k;
+----
+SELECT k, AVG(i) FROM a GROUP BY k;
+
+
+-- Do not eliminate even though f and AVG(f) both have type float
+SELECT k, AVG(f) FROM a GROUP BY k;
+----
+SELECT k, AVG(f) FROM a GROUP BY k;
+
+
+-- Do not eliminate because COUNT is not pass-through
+-- even though we statically know it will equal 1
+SELECT k, COUNT(i) FROM a GROUP BY k;
+----
+SELECT k, COUNT(i) FROM a GROUP BY k;
+
+
+-- Do not eliminate because i does not form a key
+SELECT SUM(k), SUM(f) FROM a GROUP BY i;
+----
+SELECT SUM(k), SUM(f) FROM a GROUP BY i;
+
+ROLLBACK;
+
